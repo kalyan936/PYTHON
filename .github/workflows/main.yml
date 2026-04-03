@@ -1,0 +1,150 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: python-learning-app
+
+jobs:
+  build-apk:
+    name: Build APK with Buildozer
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Java 17 and force it as default
+        run: |
+          sudo apt-get install -y openjdk-17-jdk
+          sudo update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java
+          sudo update-alternatives --set javac /usr/lib/jvm/java-17-openjdk-amd64/bin/javac
+          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> $GITHUB_ENV
+          export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+          java -version
+        working-directory: ${{ github.workspace }}
+
+      - name: Cache Buildozer global directory
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: buildozer-global-${{ runner.os }}-${{ hashFiles('python-learning-app/buildozer.spec') }}
+          restore-keys: |
+            buildozer-global-${{ runner.os }}-
+
+      - name: Cache Buildozer project directory
+        uses: actions/cache@v4
+        with:
+          path: python-learning-app/.buildozer
+          key: buildozer-project-${{ runner.os }}-${{ hashFiles('python-learning-app/buildozer.spec') }}
+          restore-keys: |
+            buildozer-project-${{ runner.os }}-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            git zip unzip \
+            python3-pip \
+            autoconf libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev \
+            libffi-dev libssl-dev \
+            build-essential ccache lld \
+            libsqlite3-dev libgdbm-dev \
+            libbz2-dev liblzma-dev \
+            patch cmake ninja-build \
+            libltdl-dev
+        working-directory: ${{ github.workspace }}
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install buildozer==1.5.0
+          pip install cython==0.29.36
+
+      - name: Verify environment
+        run: |
+          echo "Java version:"
+          java -version
+          echo "Python version:"
+          python --version
+          echo "Buildozer version:"
+          buildozer version
+          echo "Cython version:"
+          python -c "import Cython; print(Cython.__version__)"
+          echo "Working directory:"
+          pwd
+          echo "Files here:"
+          ls -la
+
+      - name: Build debug APK (full verbose)
+        run: |
+          buildozer -v android debug 2>&1 | tee build.log || true
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+
+      - name: Show build results and errors
+        if: always()
+        run: |
+          echo "==============================="
+          echo "=== bin/ contents ==="
+          echo "==============================="
+          ls -lh bin/ 2>/dev/null || echo "bin/ does not exist — build failed"
+
+          echo ""
+          echo "==============================="
+          echo "=== FULL BUILD LOG ==="
+          echo "==============================="
+          cat build.log 2>/dev/null || echo "no build.log found"
+
+      - name: Upload APK artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: PyLearn-debug-apk
+          path: python-learning-app/bin/*.apk
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload build log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: python-learning-app/build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-22.04
+    needs: build-apk
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: PyLearn-debug-apk
+          path: bin/
+
+      - name: Create Release and upload APK
+        uses: softprops/action-gh-release@v2
+        with:
+          name: PyLearn ${{ github.ref_name }}
+          body: |
+            
+          files: bin/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
